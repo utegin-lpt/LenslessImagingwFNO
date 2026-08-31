@@ -10,7 +10,13 @@ from torchmetrics.image import StructuralSimilarityIndexMeasure
 from torchmetrics.image import PeakSignalNoiseRatio
 import matplotlib.pyplot as plt
 
-from FNO import FNO2d, DiffuserImageDataset
+
+MODEL = 'fno'
+
+if MODEL == 'fno':
+    from FNO import FNO2d, DiffuserImageDataset
+else:
+    from unet import UNet, DiffuserImageDataset
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
@@ -19,11 +25,15 @@ print(f"Using device: {device}")
 
 INPUT_FOLDER = '/content/data/dataset/diffused'
 TARGET_FOLDER = '/content/data/dataset/ground'
-CHECKPOINT = 'FNO_best.pth'
+CHECKPOINT = 'FNO_best.pth' if MODEL == 'fno' else 'UNet_best.pth'
 
-# Resolutions to evaluate. The model is trained only at 128x128 in our case;
-# 256 and 512 are unseen during training.
-EVAL_RESOLUTIONS = [128, 256, 512]
+MODEL_LABEL = 'FNO' if MODEL == 'fno' else 'U-Net'
+
+# Resolutions to evaluate, as (height, width). The model is trained only at 90x160 in
+# our case; 180x320 and 270x480 are unseen during training (for public datasets). Every step is an exact
+# multiple of 90x160, so the aspect ratio never changes, and 270x480 is the native
+# resolution of the captured pairs.
+EVAL_RESOLUTIONS = [(90, 160), (180, 320), (270, 480)]
 
 NUM_PLOT_SAMPLES = 4
 
@@ -34,7 +44,7 @@ NUM_PLOT_SAMPLES = 4
 NATIVE_RES = max(EVAL_RESOLUTIONS)
 
 native_transform = transforms.Compose([
-    transforms.Resize((NATIVE_RES, NATIVE_RES)),
+    transforms.Resize(NATIVE_RES),
     transforms.ToTensor(),
 ])
 
@@ -53,16 +63,42 @@ _, _, test_dataset = random_split(
 test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=2, pin_memory=True)
 print(f"Test set size: {len(test_dataset)}")
 
-# Load the trained FNO. Be carefull that modes and width should be same with training.
+# Load the trained model. Be carefull that the arguments should be same with training.
 
-model = FNO2d(
-    modes1=24,
-    modes2=24,
-    width=34,
-    n_layers=6,
-    in_channels=3,
-    out_channels=3,
-).to(device)
+if MODEL == 'fno':
+    model = FNO2d(
+        modes=24,
+        width=29,
+        n_layers=4,
+        corners=2,
+        init='sqrt_cin',
+        norm='group',
+        input_norm='max',
+        use_grid=True,
+        padding=0.0,
+        mlp_ratio=1.0,
+        residual=False,
+        proj_hidden=128,
+        in_channels=3,
+        out_channels=3,
+    ).to(device)
+else:
+    model = UNet(
+        depth=3,
+        base=64,
+        k=3,
+        ch_max=512,
+        center_convs=2,
+        dilation=4,
+        center_dilations=(4, 4),
+        pool='max',
+        padding_mode='zeros',
+        bottleneck='none',
+        dropout=0.5,
+        input_maxnorm=False,
+        in_channels=3,
+        out_channels=3,
+    ).to(device)
 
 state = torch.load(CHECKPOINT, map_location=device)
 model.load_state_dict(state)
@@ -74,10 +110,10 @@ print(f"Loaded checkpoint '{CHECKPOINT}' ({param_count:,} parameters)")
 # Multi-resolution evaluation
 
 def downsample(x, size):
-    """Bilinear downsample to (size, size). Matches the paper's protocol."""
-    if x.shape[-1] == size and x.shape[-2] == size:
+    """Bilinear downsample to (height, width). Matches the paper's protocol."""
+    if tuple(x.shape[-2:]) == tuple(size):
         return x
-    return F.interpolate(x, size=(size, size), mode='bilinear', align_corners=False)
+    return F.interpolate(x, size=tuple(size), mode='bilinear', align_corners=False)
 
 
 results = {res: {'psnr': [], 'ssim': []} for res in EVAL_RESOLUTIONS}
@@ -116,28 +152,28 @@ with torch.no_grad():
 # Multi resolution comparision
 
 print("\n" + "=" * 56)
-print("Resolution-Agnostic Inference Performance of FNO")
-print("(model trained exclusively at 128 x 128)")
+print(f"Resolution-Agnostic Inference Performance of {MODEL_LABEL}")
+print("(model trained exclusively at 90 x 160)")
 print("=" * 56)
 print(f"{'Evaluated at':>16} | {'PSNR (dB)':>12} | {'PSNR std':>10} | {'SSIM':>8}")
 print("-" * 56)
 for res in EVAL_RESOLUTIONS:
     p = np.array(results[res]['psnr'])
     s = np.array(results[res]['ssim'])
-    print(f"{res:>6} x {res:<6} | {p.mean():>12.2f} | {p.std():>10.2f} | {s.mean():>8.4f}")
+    print(f"{res[0]:>6} x {res[1]:<6} | {p.mean():>12.2f} | {p.std():>10.2f} | {s.mean():>8.4f}")
 print("=" * 56)
 
 
 n_rows = len(EVAL_RESOLUTIONS)
-n_cols = NUM_PLOT_SAMPLES * 3  
+n_cols = NUM_PLOT_SAMPLES * 3
 
-fig, axes = plt.subplots(n_rows, n_cols, figsize=(3 * n_cols, 3 * n_rows))
+fig, axes = plt.subplots(n_rows, n_cols, figsize=(3 * n_cols, 2 * n_rows))
 if n_rows == 1:
     axes = axes[None, :]
 
 col_titles = []
 for _ in range(NUM_PLOT_SAMPLES):
-    col_titles += ['Diffuser', 'FNO', 'Ground Truth']
+    col_titles += ['Diffuser', MODEL_LABEL, 'Ground Truth']
 
 for r, res in enumerate(EVAL_RESOLUTIONS):
     samples = plot_samples[res]
@@ -148,7 +184,7 @@ for r, res in enumerate(EVAL_RESOLUTIONS):
             ax.axis('off')
             if r == 0:
                 ax.set_title(col_titles[s_idx * 3 + c_off], fontsize=11)
-        axes[r, 0].set_ylabel(f"{res}x{res}", fontsize=12, rotation=90, labelpad=10)
+        axes[r, 0].set_ylabel(f"{res[0]}x{res[1]}", fontsize=12, rotation=90, labelpad=10)
 
 plt.tight_layout()
 plt.savefig('multires_reconstructions.png', dpi=150, bbox_inches='tight')

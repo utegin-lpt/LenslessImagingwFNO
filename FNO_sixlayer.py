@@ -132,7 +132,7 @@ def make_norm(kind, ch):
         return nn.Identity()
     if kind == 'group':
         g = min(8, ch)
-        while ch % g:            
+        while ch % g:            # keep num_groups a divisor of ch for any width
             g -= 1
         return nn.GroupNorm(g, ch)
     if kind == 'instance':
@@ -266,15 +266,14 @@ class CombinedLoss(nn.Module):
 in_ch = 3
 out_ch = 3
 
-
 model = FNO2d(
     modes=24,
-    width=29,
-    n_layers=4,
+    width=24,
+    n_layers=6,
     corners=2,
     init='sqrt_cin',
     norm='group',
-    input_norm='max',
+    input_norm='none',
     use_grid=True,
     padding=0.0,
     mlp_ratio=1.0,
@@ -287,7 +286,8 @@ model = FNO2d(
 param_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
 print(f"Model parameters: {param_count:,}")
 
-assert param_count == 7_765_729, f"expected 7,765,729 parameters, got {param_count:,}"
+# Architecture drift cannot pass silently.
+assert param_count == 7_977_443, f"expected 7,977,443 parameters, got {param_count:,}"
 
 epochs = 50
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
