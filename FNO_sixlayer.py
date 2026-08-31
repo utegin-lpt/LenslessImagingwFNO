@@ -132,7 +132,7 @@ def make_norm(kind, ch):
         return nn.Identity()
     if kind == 'group':
         g = min(8, ch)
-        while ch % g:            # keep num_groups a divisor of ch for any width
+        while ch % g:           
             g -= 1
         return nn.GroupNorm(g, ch)
     if kind == 'instance':
