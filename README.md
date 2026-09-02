@@ -7,7 +7,7 @@ We use a Fourier Neural Operator (FNO) to reconstruct DiffuserCam measurements. 
 
 ## Project Structure
 * `FNO.py` — Defines the FNO architecture, custom loss, and full training loop (outputs `FNO_best.pth`).
-* `FNO_sixlayer.py` — FNO architecture with a narrower width and more layers yields better performance on resolution-agnostic tasks, with a slight decrease in performance on training-resolution tests.
+* `FNO_sixlayer.py` — FNO architecture with more layers yields better performance on resolution-agnostic tasks, with a slight increase in parameter size.
 * `unet.py` — U-Net baseline training script using an identical setup for fair comparison (outputs `UNet128_best.pth`).
 * `eval_multires.py` — Evaluates the trained FNO across different resolutions to reproduce paper results.
 
