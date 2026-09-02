@@ -8,8 +8,10 @@ from torch.utils.data import DataLoader, Dataset, random_split
 from torchvision import transforms
 from torchmetrics.image import StructuralSimilarityIndexMeasure
 from torchmetrics.image import PeakSignalNoiseRatio
+from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 import matplotlib.pyplot as plt
 
+# Which trained model to evaluate: 'fno' or 'unet'. 
 
 MODEL = 'fno'
 
@@ -30,7 +32,7 @@ CHECKPOINT = 'FNO_best.pth' if MODEL == 'fno' else 'UNet_best.pth'
 MODEL_LABEL = 'FNO' if MODEL == 'fno' else 'U-Net'
 
 # Resolutions to evaluate, as (height, width). The model is trained only at 90x160 in
-# our case; 180x320 and 270x480 are unseen during training (for public datasets). Every step is an exact
+# our case; 180x320 and 270x480 are unseen during training. Every step is an exact
 # multiple of 90x160, so the aspect ratio never changes, and 270x480 is the native
 # resolution of the captured pairs.
 EVAL_RESOLUTIONS = [(90, 160), (180, 320), (270, 480)]
@@ -79,8 +81,8 @@ if MODEL == 'fno':
         mlp_ratio=1.0,
         residual=False,
         proj_hidden=128,
-        in_channels=3,
-        out_channels=3,
+        in_ch=3,
+        out_ch=3,
     ).to(device)
 else:
     model = UNet(
@@ -96,8 +98,8 @@ else:
         bottleneck='none',
         dropout=0.5,
         input_maxnorm=False,
-        in_channels=3,
-        out_channels=3,
+        in_ch=3,
+        out_ch=3,
     ).to(device)
 
 state = torch.load(CHECKPOINT, map_location=device)
@@ -116,12 +118,13 @@ def downsample(x, size):
     return F.interpolate(x, size=tuple(size), mode='bilinear', align_corners=False)
 
 
-results = {res: {'psnr': [], 'ssim': []} for res in EVAL_RESOLUTIONS}
+results = {res: {'psnr': [], 'ssim': [], 'lpips': [], 'mse': []} for res in EVAL_RESOLUTIONS}
 plot_samples = {res: [] for res in EVAL_RESOLUTIONS}
 
-# Fresh metric objects per resolution to avoid state leakage
+# Metric objects per resolution to avoid state leakage
 psnr_metrics = {res: PeakSignalNoiseRatio(data_range=1.0).to(device) for res in EVAL_RESOLUTIONS}
 ssim_metrics = {res: StructuralSimilarityIndexMeasure(data_range=1.0).to(device) for res in EVAL_RESOLUTIONS}
+lpips_metric = LearnedPerceptualImagePatchSimilarity(net_type='alex', normalize=True).to(device)
 
 with torch.no_grad():
     for batch_idx, (diffused_native, gt_native) in enumerate(test_loader):
@@ -136,9 +139,14 @@ with torch.no_grad():
 
             psnr_val = psnr_metrics[res](pred, gt).item()
             ssim_val = ssim_metrics[res](pred, gt).item()
+            lpips_val = lpips_metric(pred, gt).item()
+            lpips_metric.reset()
+            mse_val = F.mse_loss(pred, gt).item()
 
             results[res]['psnr'].append(psnr_val)
             results[res]['ssim'].append(ssim_val)
+            results[res]['lpips'].append(lpips_val)
+            results[res]['mse'].append(mse_val)
 
             if batch_idx == 0 and len(plot_samples[res]) < NUM_PLOT_SAMPLES:
                 n_take = min(NUM_PLOT_SAMPLES - len(plot_samples[res]), diffused.shape[0])
@@ -151,17 +159,21 @@ with torch.no_grad():
 
 # Multi resolution comparision
 
-print("\n" + "=" * 56)
+print("\n" + "=" * 78)
 print(f"Resolution-Agnostic Inference Performance of {MODEL_LABEL}")
 print("(model trained exclusively at 90 x 160)")
-print("=" * 56)
-print(f"{'Evaluated at':>16} | {'PSNR (dB)':>12} | {'PSNR std':>10} | {'SSIM':>8}")
-print("-" * 56)
+print("=" * 78)
+print(f"{'Evaluated at':>16} | {'PSNR (dB)':>12} | {'PSNR std':>10} | {'SSIM':>8} | {'LPIPS':>8} | {'MSE':>9}")
+print("-" * 78)
 for res in EVAL_RESOLUTIONS:
     p = np.array(results[res]['psnr'])
     s = np.array(results[res]['ssim'])
-    print(f"{res[0]:>6} x {res[1]:<6} | {p.mean():>12.2f} | {p.std():>10.2f} | {s.mean():>8.4f}")
-print("=" * 56)
+    l = np.array(results[res]['lpips'])
+    m = np.array(results[res]['mse'])
+    print(f"{res[0]:>6} x {res[1]:<6} | {p.mean():>12.2f} | {p.std():>10.2f} | {s.mean():>8.4f}"
+          f" | {l.mean():>8.4f} | {m.mean():>9.5f}")
+print("=" * 78)
+print("PSNR / SSIM: higher is better.  LPIPS / MSE: lower is better.")
 
 
 n_rows = len(EVAL_RESOLUTIONS)
